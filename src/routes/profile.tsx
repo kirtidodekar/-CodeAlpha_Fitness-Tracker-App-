@@ -2,11 +2,13 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { doc, getDoc, updateDoc, setDoc, collection, query, where, getDocs, serverTimestamp } from "firebase/firestore";
 import { LogOut, Scale, Bell, Moon, Target, Calculator } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import type { Profile, FitnessData } from "@/integrations/firebase/types";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({ meta: [{ title: "Profile — FitTrack Pro" }, { name: "description", content: "Manage your profile and fitness goals." }] }),
@@ -20,12 +22,26 @@ function ProfilePage() {
   const today = format(new Date(), "yyyy-MM-dd");
 
   const { data: profile } = useQuery({
-    queryKey: ["profile", user?.id], enabled: !!user,
-    queryFn: async () => (await supabase.from("profiles").select("*").eq("id", user!.id).maybeSingle()).data,
+    queryKey: ["profile", user?.uid], enabled: !!user,
+    queryFn: async () => {
+      const docRef = doc(db, "profiles", user!.uid);
+      const docSnap = await getDoc(docRef);
+      return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } as Profile : null;
+    },
   });
   const { data: todayFitness } = useQuery({
-    queryKey: ["fitness-today", user?.id, today], enabled: !!user,
-    queryFn: async () => (await supabase.from("fitness_data").select("weight").eq("user_id", user!.id).eq("log_date", today).maybeSingle()).data,
+    queryKey: ["fitness-today", user?.uid, today], enabled: !!user,
+    queryFn: async () => {
+      const q = query(
+        collection(db, "fitness_data"),
+        where("user_id", "==", user!.uid),
+        where("log_date", "==", today)
+      );
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) return null;
+      const docSnap = snapshot.docs[0];
+      return { id: docSnap.id, ...docSnap.data() } as FitnessData;
+    },
   });
 
   const [form, setForm] = useState({ full_name: "", daily_step_goal: 10000, daily_calorie_goal: 2000, daily_water_goal: 8, weight_goal: "" });
@@ -46,21 +62,52 @@ function ProfilePage() {
 
   async function saveProfile() {
     if (!user) return;
-    const { error } = await supabase.from("profiles").update({
-      full_name: form.full_name,
-      daily_step_goal: form.daily_step_goal,
-      daily_calorie_goal: form.daily_calorie_goal,
-      daily_water_goal: form.daily_water_goal,
-      weight_goal: form.weight_goal ? Number(form.weight_goal) : null,
-    }).eq("id", user.id);
-    if (error) toast.error(error.message); else { toast.success("Profile saved"); qc.invalidateQueries({ queryKey: ["profile"] }); }
+    try {
+      const profileRef = doc(db, "profiles", user.uid);
+      await updateDoc(profileRef, {
+        full_name: form.full_name,
+        daily_step_goal: form.daily_step_goal,
+        daily_calorie_goal: form.daily_calorie_goal,
+        daily_water_goal: form.daily_water_goal,
+        weight_goal: form.weight_goal ? Number(form.weight_goal) : null,
+        updated_at: serverTimestamp(),
+      });
+      toast.success("Profile saved");
+      qc.invalidateQueries({ queryKey: ["profile"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to save profile");
+    }
   }
 
   async function saveWeight() {
     if (!user || !weight) return;
-    await supabase.from("fitness_data").upsert({
-      user_id: user.id, log_date: today, weight: Number(weight),
-    }, { onConflict: "user_id,log_date" });
+    // Find existing fitness data for today or create new
+    const q = query(
+      collection(db, "fitness_data"),
+      where("user_id", "==", user.uid),
+      where("log_date", "==", today)
+    );
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      // Create new document
+      const newDocRef = doc(collection(db, "fitness_data"));
+      await setDoc(newDocRef, {
+        id: newDocRef.id,
+        user_id: user.uid,
+        log_date: today,
+        weight: Number(weight),
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
+    } else {
+      // Update existing document
+      const docRef = snapshot.docs[0].ref;
+      await updateDoc(docRef, {
+        weight: Number(weight),
+        updated_at: serverTimestamp(),
+      });
+    }
     toast.success("Weight logged");
     qc.invalidateQueries({ queryKey: ["fitness-today"] });
     qc.invalidateQueries({ queryKey: ["analytics-fitness"] });

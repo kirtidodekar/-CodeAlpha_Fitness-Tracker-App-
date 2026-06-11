@@ -3,11 +3,13 @@ import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
 import { ProgressRing } from "@/components/ProgressRing";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { collection, doc, getDoc, getDocs, setDoc, updateDoc, query, where, serverTimestamp } from "firebase/firestore";
 import { Footprints, Award, Plus, Minus, Droplets } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import type { FitnessData, Profile } from "@/integrations/firebase/types";
 
 export const Route = createFileRoute("/steps")({
   head: () => ({ meta: [{ title: "Steps — FitTrack Pro" }, { name: "description", content: "Track your daily steps and water intake." }] }),
@@ -22,17 +24,28 @@ function StepsPage() {
   const [water, setWater] = useState(0);
 
   const { data } = useQuery({
-    queryKey: ["fitness-today", user?.id, today],
+    queryKey: ["fitness-today", user?.uid, today],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("fitness_data").select("*").eq("user_id", user!.id).eq("log_date", today).maybeSingle();
-      return data;
+      const q = query(
+        collection(db, "fitness_data"),
+        where("user_id", "==", user!.uid),
+        where("log_date", "==", today)
+      );
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) return null;
+      const docSnap = snapshot.docs[0];
+      return { id: docSnap.id, ...docSnap.data() } as FitnessData;
     },
   });
 
   const { data: profile } = useQuery({
-    queryKey: ["profile", user?.id], enabled: !!user,
-    queryFn: async () => (await supabase.from("profiles").select("daily_step_goal, daily_water_goal").eq("id", user!.id).maybeSingle()).data,
+    queryKey: ["profile", user?.uid], enabled: !!user,
+    queryFn: async () => {
+      const docRef = doc(db, "profiles", user!.uid);
+      const docSnap = await getDoc(docRef);
+      return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } as Profile : null;
+    },
   });
 
   useEffect(() => {
@@ -44,9 +57,35 @@ function StepsPage() {
 
   async function persist(newSteps: number, newWater: number) {
     if (!user) return;
-    await supabase.from("fitness_data").upsert({
-      user_id: user.id, log_date: today, steps: newSteps, water_intake: newWater,
-    }, { onConflict: "user_id,log_date" });
+    // Find existing fitness data for today or create new
+    const q = query(
+      collection(db, "fitness_data"),
+      where("user_id", "==", user.uid),
+      where("log_date", "==", today)
+    );
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      // Create new document
+      const newDocRef = doc(collection(db, "fitness_data"));
+      await setDoc(newDocRef, {
+        id: newDocRef.id,
+        user_id: user.uid,
+        log_date: today,
+        steps: newSteps,
+        water_intake: newWater,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
+    } else {
+      // Update existing document
+      const docRef = snapshot.docs[0].ref;
+      await updateDoc(docRef, {
+        steps: newSteps,
+        water_intake: newWater,
+        updated_at: serverTimestamp(),
+      });
+    }
     qc.invalidateQueries({ queryKey: ["fitness-today"] });
   }
 

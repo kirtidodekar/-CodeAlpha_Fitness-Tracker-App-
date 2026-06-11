@@ -1,10 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { collection, getDocs, query, where, orderBy } from "firebase/firestore";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { format, subDays, eachDayOfInterval } from "date-fns";
+import type { Workout, CalorieLog, FitnessData } from "@/integrations/firebase/types";
 
 export const Route = createFileRoute("/analytics")({
   head: () => ({ meta: [{ title: "Analytics — FitTrack Pro" }, { name: "description", content: "Your fitness progress over time." }] }),
@@ -24,22 +26,52 @@ function AnalyticsPage() {
   const start = format(subDays(new Date(), 29), "yyyy-MM-dd");
 
   const { data: workouts } = useQuery({
-    queryKey: ["analytics-workouts", user?.id], enabled: !!user,
-    queryFn: async () => (await supabase.from("workouts").select("*").eq("user_id", user!.id).gte("workout_date", start)).data ?? [],
+    queryKey: ["analytics-workouts", user?.uid],
+    enabled: !!user,
+    queryFn: async () => {
+      const q = query(
+        collection(db, "workouts"),
+        where("user_id", "==", user!.uid),
+        where("workout_date", ">=", start)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Workout));
+    },
   });
+
   const { data: cals } = useQuery({
-    queryKey: ["analytics-cals", user?.id], enabled: !!user,
-    queryFn: async () => (await supabase.from("calorie_logs").select("calories, log_date").eq("user_id", user!.id).gte("log_date", start)).data ?? [],
+    queryKey: ["analytics-cals", user?.uid],
+    enabled: !!user,
+    queryFn: async () => {
+      const q = query(
+        collection(db, "calorie_logs"),
+        where("user_id", "==", user!.uid),
+        where("log_date", ">=", start)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as CalorieLog));
+    },
   });
+
   const { data: fitness } = useQuery({
-    queryKey: ["analytics-fitness", user?.id], enabled: !!user,
-    queryFn: async () => (await supabase.from("fitness_data").select("*").eq("user_id", user!.id).gte("log_date", start).order("log_date")).data ?? [],
+    queryKey: ["analytics-fitness", user?.uid],
+    enabled: !!user,
+    queryFn: async () => {
+      const q = query(
+        collection(db, "fitness_data"),
+        where("user_id", "==", user!.uid),
+        where("log_date", ">=", start),
+        orderBy("log_date", "asc")
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FitnessData));
+    },
   });
 
   const days = eachDayOfInterval({ start: subDays(new Date(), 6), end: new Date() });
   const weeklyCals = days.map((d) => {
     const ds = format(d, "yyyy-MM-dd");
-    const total = (cals ?? []).filter((c) => c.log_date === ds).reduce((s, c) => s + c.calories, 0);
+    const total = (cals ?? []).filter((c) => c.log_date === ds).reduce((s, c) => s + (c.calories ?? 0), 0);
     return { day: format(d, "EEE"), cal: total };
   });
   const monthlyWorkouts = eachDayOfInterval({ start: subDays(new Date(), 29), end: new Date() }).map((d) => {
@@ -50,8 +82,8 @@ function AnalyticsPage() {
   const weightData = (fitness ?? []).filter((f) => f.weight != null).map((f) => ({ day: format(new Date(f.log_date), "MMM d"), weight: Number(f.weight) }));
 
   const totalWorkouts = workouts?.length ?? 0;
-  const totalMinutes = (workouts ?? []).reduce((s, w) => s + w.duration_minutes, 0);
-  const totalCalsBurned = (workouts ?? []).reduce((s, w) => s + w.calories_burned, 0);
+  const totalMinutes = (workouts ?? []).reduce((s, w) => s + (w.duration_minutes ?? 0), 0);
+  const totalCalsBurned = (workouts ?? []).reduce((s, w) => s + (w.calories_burned ?? 0), 0);
   const streak = computeStreak(fitness ?? [], workouts ?? []);
 
   return (

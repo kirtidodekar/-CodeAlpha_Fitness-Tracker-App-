@@ -2,11 +2,13 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { collection, addDoc, deleteDoc, doc, getDoc, getDocs, query, where, orderBy, serverTimestamp } from "firebase/firestore";
 import { UtensilsCrossed, Coffee, Sun, Moon, Cookie, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import type { CalorieLog, Profile } from "@/integrations/firebase/types";
 
 type Meal = "breakfast" | "lunch" | "dinner" | "snacks";
 
@@ -30,40 +32,61 @@ function CaloriesPage() {
   const [saving, setSaving] = useState(false);
 
   const { data: logs } = useQuery({
-    queryKey: ["calorie_logs", user?.id, today],
+    queryKey: ["calorie_logs", user?.uid, today],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("calorie_logs").select("*").eq("user_id", user!.id).eq("log_date", today).order("created_at");
-      return data ?? [];
+      const q = query(
+        collection(db, "calorie_logs"),
+        where("user_id", "==", user!.uid),
+        where("log_date", "==", today),
+        orderBy("created_at", "asc")
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as CalorieLog));
     },
   });
 
   const { data: profile } = useQuery({
-    queryKey: ["profile", user?.id], enabled: !!user,
-    queryFn: async () => (await supabase.from("profiles").select("daily_calorie_goal").eq("id", user!.id).maybeSingle()).data,
+    queryKey: ["profile", user?.uid], enabled: !!user,
+    queryFn: async () => {
+      const docRef = doc(db, "profiles", user!.uid);
+      const docSnap = await getDoc(docRef);
+      return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } as Profile : null;
+    },
   });
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!user) return;
     setSaving(true);
-    const { error } = await supabase.from("calorie_logs").insert({
-      user_id: user.id, food_name: form.food_name, calories: Number(form.calories), meal_type: form.meal_type,
-    });
-    setSaving(false);
-    if (error) toast.error(error.message);
-    else {
+    try {
+      await addDoc(collection(db, "calorie_logs"), {
+        user_id: user.uid,
+        food_name: form.food_name,
+        calories: Number(form.calories),
+        meal_type: form.meal_type,
+        log_date: today,
+        created_at: serverTimestamp(),
+      });
       toast.success("Added");
       setForm({ ...form, food_name: "", calories: "" });
       qc.invalidateQueries({ queryKey: ["calorie_logs"] });
       qc.invalidateQueries({ queryKey: ["cal-today"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to add calorie log");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function remove(id: string) {
-    await supabase.from("calorie_logs").delete().eq("id", id);
-    qc.invalidateQueries({ queryKey: ["calorie_logs"] });
-    qc.invalidateQueries({ queryKey: ["cal-today"] });
+    try {
+      await deleteDoc(doc(db, "calorie_logs", id));
+      qc.invalidateQueries({ queryKey: ["calorie_logs"] });
+      qc.invalidateQueries({ queryKey: ["cal-today"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to delete calorie log");
+    }
   }
 
   const total = (logs ?? []).reduce((s, l) => s + l.calories, 0);

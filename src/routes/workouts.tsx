@@ -2,11 +2,13 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { collection, addDoc, deleteDoc, doc, getDocs, query, where, orderBy, serverTimestamp } from "firebase/firestore";
 import { Dumbbell, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import type { Workout } from "@/integrations/firebase/types";
 
 export const Route = createFileRoute("/workouts")({
   head: () => ({ meta: [{ title: "Workouts — FitTrack Pro" }, { name: "description", content: "Log and track your workouts." }] }),
@@ -22,11 +24,17 @@ function WorkoutsPage() {
   const [saving, setSaving] = useState(false);
 
   const { data: workouts } = useQuery({
-    queryKey: ["workouts", user?.id],
+    queryKey: ["workouts", user?.uid],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("workouts").select("*").eq("user_id", user!.id).order("workout_date", { ascending: false }).order("created_at", { ascending: false });
-      return data ?? [];
+      const q = query(
+        collection(db, "workouts"),
+        where("user_id", "==", user!.uid),
+        orderBy("workout_date", "desc"),
+        orderBy("created_at", "desc")
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Workout));
     },
   });
 
@@ -34,29 +42,37 @@ function WorkoutsPage() {
     e.preventDefault();
     if (!user) return;
     setSaving(true);
-    const { error } = await supabase.from("workouts").insert({
-      user_id: user.id,
-      workout_name: form.workout_name,
-      workout_type: form.workout_type,
-      duration_minutes: Number(form.duration_minutes),
-      calories_burned: Number(form.calories_burned || 0),
-      notes: form.notes || null,
-    });
-    setSaving(false);
-    if (error) toast.error(error.message);
-    else {
+    try {
+      await addDoc(collection(db, "workouts"), {
+        user_id: user.uid,
+        workout_name: form.workout_name,
+        workout_type: form.workout_type,
+        duration_minutes: Number(form.duration_minutes),
+        calories_burned: Number(form.calories_burned || 0),
+        notes: form.notes || null,
+        workout_date: format(new Date(), "yyyy-MM-dd"),
+        created_at: serverTimestamp(),
+      });
       toast.success("Workout saved! 💪");
       setForm({ workout_name: "", workout_type: "Cardio", duration_minutes: "", calories_burned: "", notes: "" });
       qc.invalidateQueries({ queryKey: ["workouts"] });
       qc.invalidateQueries({ queryKey: ["workouts-today"] });
       qc.invalidateQueries({ queryKey: ["week-workouts"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to save workout");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function remove(id: string) {
-    await supabase.from("workouts").delete().eq("id", id);
-    toast.success("Removed");
-    qc.invalidateQueries({ queryKey: ["workouts"] });
+    try {
+      await deleteDoc(doc(db, "workouts", id));
+      toast.success("Removed");
+      qc.invalidateQueries({ queryKey: ["workouts"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to delete workout");
+    }
   }
 
   return (

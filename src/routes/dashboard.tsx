@@ -2,11 +2,13 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
 import { ProgressRing } from "@/components/ProgressRing";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { collection, doc, getDoc, getDocs, query, where, orderBy, Timestamp } from "firebase/firestore";
 import { Footprints, Flame, Timer, Droplets, Dumbbell, UtensilsCrossed, Plus, Scale, Quote } from "lucide-react";
 import { BarChart, Bar, XAxis, ResponsiveContainer, Tooltip, Cell } from "recharts";
 import { format, subDays, startOfWeek, addDays } from "date-fns";
+import type { Profile, FitnessData, Workout, CalorieLog } from "@/integrations/firebase/types";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — FitTrack Pro" }, { name: "description", content: "Your daily fitness overview." }] }),
@@ -26,48 +28,71 @@ function Dashboard() {
   const today = format(new Date(), "yyyy-MM-dd");
 
   const { data: profile } = useQuery({
-    queryKey: ["profile", user?.id],
+    queryKey: ["profile", user?.uid],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("profiles").select("*").eq("id", user!.id).maybeSingle();
-      return data;
+      const docRef = doc(db, "profiles", user!.uid);
+      const docSnap = await getDoc(docRef);
+      return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } as Profile : null;
     },
   });
 
   const { data: todayData } = useQuery({
-    queryKey: ["fitness-today", user?.id, today],
+    queryKey: ["fitness-today", user?.uid, today],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("fitness_data").select("*").eq("user_id", user!.id).eq("log_date", today).maybeSingle();
-      return data;
+      const q = query(
+        collection(db, "fitness_data"),
+        where("user_id", "==", user!.uid),
+        where("log_date", "==", today)
+      );
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) return null;
+      const docSnap = snapshot.docs[0];
+      return { id: docSnap.id, ...docSnap.data() } as FitnessData;
     },
   });
 
   const { data: todayWorkouts } = useQuery({
-    queryKey: ["workouts-today", user?.id, today],
+    queryKey: ["workouts-today", user?.uid, today],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("workouts").select("*").eq("user_id", user!.id).eq("workout_date", today);
-      return data ?? [];
+      const q = query(
+        collection(db, "workouts"),
+        where("user_id", "==", user!.uid),
+        where("workout_date", "==", today)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Workout));
     },
   });
 
   const { data: todayCalories } = useQuery({
-    queryKey: ["cal-today", user?.id, today],
+    queryKey: ["cal-today", user?.uid, today],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase.from("calorie_logs").select("calories").eq("user_id", user!.id).eq("log_date", today);
-      return data ?? [];
+      const q = query(
+        collection(db, "calorie_logs"),
+        where("user_id", "==", user!.uid),
+        where("log_date", "==", today)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as CalorieLog));
     },
   });
 
   const { data: weekly } = useQuery({
-    queryKey: ["week-workouts", user?.id],
+    queryKey: ["week-workouts", user?.uid],
     enabled: !!user,
     queryFn: async () => {
       const start = format(subDays(new Date(), 6), "yyyy-MM-dd");
-      const { data } = await supabase.from("workouts").select("workout_date, duration_minutes").eq("user_id", user!.id).gte("workout_date", start);
-      return data ?? [];
+      const q = query(
+        collection(db, "workouts"),
+        where("user_id", "==", user!.uid),
+        where("workout_date", ">=", start)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Workout));
     },
   });
 

@@ -1,7 +1,14 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Activity, Mail, Lock, User as UserIcon, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  sendPasswordResetEmail,
+} from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "@/integrations/firebase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import { lovable } from "@/integrations/lovable";
@@ -29,22 +36,43 @@ function AuthPage() {
     setLoading(true);
     try {
       if (tab === "signin") {
-        const { error } = await supabase.auth.signInWithPassword({ email: form.email, password: form.password });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, form.email, form.password);
         toast.success("Welcome back!");
         router.navigate({ to: "/dashboard" });
       } else {
         if (form.password !== form.confirm) throw new Error("Passwords don't match");
-        const { error } = await supabase.auth.signUp({
-          email: form.email, password: form.password,
-          options: { data: { full_name: form.name }, emailRedirectTo: window.location.origin + "/dashboard" },
+        const credential = await createUserWithEmailAndPassword(auth, form.email, form.password);
+        // Update display name
+        if (form.name && credential.user) {
+          await updateProfile(credential.user, { displayName: form.name });
+        }
+        // Create profile document in Firestore
+        await setDoc(doc(db, "profiles", credential.user.uid), {
+          id: credential.user.uid,
+          email: form.email,
+          full_name: form.name || null,
+          daily_step_goal: 10000,
+          daily_calorie_goal: 2000,
+          daily_water_goal: 8,
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp(),
         });
-        if (error) throw error;
         toast.success("Account created!");
         router.navigate({ to: "/dashboard" });
       }
     } catch (err: any) {
-      toast.error(err.message ?? "Something went wrong");
+      const code = err?.code ?? '';
+      const msg: Record<string, string> = {
+        'auth/email-already-in-use': 'This email is already registered. Try signing in.',
+        'auth/weak-password': 'Password must be at least 6 characters.',
+        'auth/invalid-email': 'Please enter a valid email address.',
+        'auth/user-not-found': 'No account found with this email.',
+        'auth/wrong-password': 'Incorrect password. Please try again.',
+        'auth/invalid-credential': 'Invalid email or password.',
+        'auth/too-many-requests': 'Too many attempts. Please try again later.',
+        'auth/operation-not-allowed': 'Email/Password sign-in is not enabled. Enable it in Firebase Console.',
+      };
+      toast.error(msg[code] ?? err.message ?? 'Something went wrong');
     } finally { setLoading(false); }
   }
 
@@ -59,8 +87,12 @@ function AuthPage() {
 
   async function onForgot() {
     if (!form.email) { toast.error("Enter your email first"); return; }
-    const { error } = await supabase.auth.resetPasswordForEmail(form.email, { redirectTo: window.location.origin + "/auth" });
-    if (error) toast.error(error.message); else toast.success("Check your email for reset link");
+    try {
+      await sendPasswordResetEmail(auth, form.email, { url: window.location.origin + "/auth" });
+      toast.success("Check your email for reset link");
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to send reset email");
+    }
   }
 
   return (
@@ -83,7 +115,7 @@ function AuthPage() {
           <div className="relative mb-6 grid grid-cols-2 rounded-2xl bg-white/5 p-1">
             <div className={`absolute inset-y-1 w-[calc(50%-4px)] rounded-xl bg-[image:var(--gradient-primary)] transition-transform duration-300 ${tab === "signup" ? "translate-x-[calc(100%+8px)]" : "translate-x-1"}`} />
             {(["signin", "signup"] as const).map((t) => (
-              <button key={t} type="button" onClick={() => setTab(t)}
+              <button suppressHydrationWarning key={t} type="button" onClick={() => setTab(t)}
                 className={`relative z-10 py-2.5 text-sm font-semibold transition ${tab === t ? "text-primary-foreground" : "text-muted-foreground"}`}>
                 {t === "signin" ? "Sign In" : "Sign Up"}
               </button>
@@ -101,12 +133,12 @@ function AuthPage() {
             )}
 
             {tab === "signin" && (
-              <button type="button" onClick={onForgot} className="block w-full text-right text-xs text-secondary hover:underline">
+              <button suppressHydrationWarning type="button" onClick={onForgot} className="block w-full text-right text-xs text-secondary hover:underline">
                 Forgot password?
               </button>
             )}
 
-            <button type="submit" disabled={loading}
+            <button suppressHydrationWarning type="submit" disabled={loading}
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[image:var(--gradient-primary)] py-3.5 font-semibold text-primary-foreground glow-primary transition hover:scale-[1.02] disabled:opacity-60">
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               {tab === "signin" ? "Sign In" : "Create Account"}
@@ -117,7 +149,7 @@ function AuthPage() {
             <div className="h-px flex-1 bg-white/10" /> OR <div className="h-px flex-1 bg-white/10" />
           </div>
 
-          <button onClick={onGoogle}
+          <button suppressHydrationWarning onClick={onGoogle}
             className="flex w-full items-center justify-center gap-3 rounded-2xl glass py-3 text-sm font-medium hover:bg-white/10 transition">
             <GoogleIcon /> Continue with Google
           </button>
@@ -131,7 +163,7 @@ function Field({ icon: Icon, ...props }: React.InputHTMLAttributes<HTMLInputElem
   return (
     <div className="group relative">
       <Icon className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition group-focus-within:text-primary" />
-      <input {...props}
+      <input suppressHydrationWarning {...props}
         className="w-full rounded-2xl border border-white/10 bg-white/5 py-3.5 pl-11 pr-4 text-sm outline-none transition placeholder:text-muted-foreground focus:border-primary/50 focus:bg-white/10 focus:ring-2 focus:ring-primary/30" />
     </div>
   );

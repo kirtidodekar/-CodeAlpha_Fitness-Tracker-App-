@@ -1,36 +1,44 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { onAuthStateChanged, signOut as firebaseSignOut, type User } from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "@/integrations/firebase/client";
 
 interface AuthCtx {
   user: User | null;
-  session: Session | null;
   loading: boolean;
   signOut: () => Promise<void>;
 }
 
-const Ctx = createContext<AuthCtx>({ user: null, session: null, loading: true, signOut: async () => {} });
+const Ctx = createContext<AuthCtx>({ user: null, loading: true, signOut: async () => {} });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_evt, s) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-    });
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      // Set user immediately so the app doesn't block on Firestore writes
+      setUser(firebaseUser);
       setLoading(false);
+
+      // Write profile doc in the background (fire-and-forget)
+      if (firebaseUser) {
+        const profileRef = doc(db, "profiles", firebaseUser.uid);
+        setDoc(profileRef, {
+          id: firebaseUser.uid,
+          email: firebaseUser.email,
+          full_name: firebaseUser.displayName || null,
+          updated_at: serverTimestamp(),
+        }, { merge: true }).catch((err) => {
+          console.error("[Auth] Failed to write profile document:", err);
+        });
+      }
     });
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
   return (
-    <Ctx.Provider value={{ user, session, loading, signOut: async () => { await supabase.auth.signOut(); } }}>
+    <Ctx.Provider value={{ user, loading, signOut: async () => { await firebaseSignOut(auth); } }}>
       {children}
     </Ctx.Provider>
   );
