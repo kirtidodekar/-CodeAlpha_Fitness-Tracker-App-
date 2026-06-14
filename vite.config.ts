@@ -12,4 +12,14 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  nitro: {
+    prerender: {
+      crawlLinks: false,
+      ignore: ["/dashboard", "/workouts", "/calories", "/steps", "/analytics", "/profile", "/auth"],
+    },
+    output: {
+      dir: "dist/server",
+      publicDir: "dist/client",
+    },
+  },
 });
