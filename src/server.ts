@@ -37,23 +37,44 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   });
 }
 
-export default {
-  async fetch(request: Request, env: unknown, ctx: unknown) {
-    const url = new URL(request.url);
-    if (url.pathname === "/favicon.ico") {
-      return Response.redirect("/favicon.svg", 302);
-    }
+async function handleRequest(request: Request): Promise<Response> {
+  if (new URL(request.url).pathname === "/favicon.ico") {
+    return Response.redirect("/favicon.svg", 302);
+  }
 
-    try {
-      const handler = await getServerEntry();
-      const response = await handler.fetch(request, env, ctx);
-      return await normalizeCatastrophicSsrResponse(response);
-    } catch (error) {
-      console.error(error);
-      return new Response(renderErrorPage(), {
-        status: 500,
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    }
-  },
-};
+  try {
+    const handler = await getServerEntry();
+    const response = await handler.fetch(request, undefined, undefined);
+    return await normalizeCatastrophicSsrResponse(response);
+  } catch (error) {
+    console.error(error);
+    return new Response(renderErrorPage(), {
+      status: 500,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+  }
+}
+
+export default async function handler(req: { url?: string; method?: string; headers: Record<string, string | string[]>; }, res: { statusCode?: number; setHeader: (name: string, value: string) => void; end: (data?: string | Uint8Array) => void; }) {
+  const host = (req.headers.host as string) || "localhost";
+  const url = new URL(req.url ?? "/", `https://${host}`);
+  const request = new Request(url.toString(), {
+    method: req.method,
+    headers: req.headers as HeadersInit,
+    body: req.method === "GET" || req.method === "HEAD" ? undefined : (req as any),
+  });
+
+  const response = await handleRequest(request);
+
+  res.statusCode = response.status;
+  response.headers.forEach((value, name) => {
+    res.setHeader(name, value);
+  });
+
+  if (response.body) {
+    const bodyBuffer = Buffer.from(await response.arrayBuffer());
+    res.end(bodyBuffer);
+  } else {
+    res.end();
+  }
+}
